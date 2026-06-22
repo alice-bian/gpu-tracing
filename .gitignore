@@ -1,0 +1,11 @@
+# Build outputs
+/build/
+/*.obj
+/*.exe
+/*.pdb
+/*.ilk
+/*.idb
+/*.log
+
+# Visual Studio
+.vs/
