@@ -60,4 +60,4 @@ add_dependencies(hello_vulkan Shaders)
 
 target_link_libraries(hello_vulkan PRIVATE Vulkan::Vulkan glfw)
 
-target_compile_definitions(hello_vulkan PRIVATE "SHADER_DIR=\"${SHADER_BINARY_DIR_PATH}\"")
+target_compile_definitions(hello_vulkan PRIVATE "SHADER_DIR=\"${SHADER_BINARY_DIR}\"")

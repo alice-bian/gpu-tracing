@@ -154,10 +154,13 @@ struct CameraPushConstants {
     float pad2;
     float w[3];
     float pad3;
+    float sphereCenter[3];
+    float pad4;
     float fov;
     float aspect;
     float width;
     float height;
+    float frame;
 };
 
 static std::array<float, 3> normalizeVec3(const std::array<float, 3>& v) {
@@ -362,6 +365,21 @@ private:
     VkSemaphore imageAvailableSemaphore = VK_NULL_HANDLE;
     VkSemaphore renderFinishedSemaphore = VK_NULL_HANDLE;
 
+    VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSets[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkImage accumulationImages[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkDeviceMemory accumulationImageMemories[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkImageView accumulationImageViews[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<std::array<float, 3>, 3> spherePositions{
+        std::array<float, 3>{0.0f, 0.0f, -1.0f},
+        std::array<float, 3>{0.6f, 0.1f, -0.6f},
+        std::array<float, 3>{-0.4f, 0.2f, -1.2f}
+    };
+    std::array<float, 3> sphereCenter = spherePositions[0];
+    uint32_t currentSphereIndex = 0;
+    uint32_t frameCount = 0;
+
     void initWindow() {
         glfwInit();
 
@@ -380,16 +398,33 @@ private:
         createSwapChain();
         createImageViews();
         createRenderPass();
+        createDescriptorSetLayout();
         createGraphicsPipeline();
         createFramebuffers();
         createCommandPool();
+        createAccumulationResources();
+        createDescriptorPool();
+        createDescriptorSets();
         createCommandBuffers();
         createSyncObjects();
     }
 
     void mainLoop() {
+        bool resetKeyDown = false;
+
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
+
+            bool rPressed = glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS;
+            if (rPressed && !resetKeyDown) {
+                currentSphereIndex = (currentSphereIndex + 1) % static_cast<uint32_t>(spherePositions.size());
+                sphereCenter = spherePositions[currentSphereIndex];
+                resetAccumulation();
+                resetKeyDown = true;
+            } else if (!rPressed) {
+                resetKeyDown = false;
+            }
+
             drawFrame();
         }
         vkDeviceWaitIdle(device);
@@ -414,8 +449,27 @@ private:
         if (pipelineLayout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         }
+        if (descriptorPool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+        }
+        if (descriptorSetLayout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+        }
         if (renderPass != VK_NULL_HANDLE) {
             vkDestroyRenderPass(device, renderPass, nullptr);
+        }
+        for (auto imageView : accumulationImageViews) {
+            if (imageView != VK_NULL_HANDLE) {
+                vkDestroyImageView(device, imageView, nullptr);
+            }
+        }
+        for (int i = 0; i < 2; i++) {
+            if (accumulationImages[i] != VK_NULL_HANDLE) {
+                vkDestroyImage(device, accumulationImages[i], nullptr);
+            }
+            if (accumulationImageMemories[i] != VK_NULL_HANDLE) {
+                vkFreeMemory(device, accumulationImageMemories[i], nullptr);
+            }
         }
         for (auto imageView : swapChainImageViews) {
             vkDestroyImageView(device, imageView, nullptr);
@@ -754,8 +808,8 @@ private:
 
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipelineLayoutInfo.setLayoutCount = 0;
-        pipelineLayoutInfo.pSetLayouts = nullptr;
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
         pipelineLayoutInfo.pushConstantRangeCount = 1;
         pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
@@ -815,10 +869,321 @@ private:
         VkCommandPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value();
-        poolInfo.flags = 0;
+        poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 
         if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
             throw std::runtime_error("failed to create command pool!");
+        }
+    }
+
+    uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
+        VkPhysicalDeviceMemoryProperties memProperties;
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+
+        for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+            if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+                return i;
+            }
+        }
+
+        throw std::runtime_error("failed to find suitable memory type!");
+    }
+
+    VkCommandBuffer beginSingleTimeCommands() {
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandPool = commandPool;
+        allocInfo.commandBufferCount = 1;
+
+        VkCommandBuffer commandBuffer;
+        vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+        vkBeginCommandBuffer(commandBuffer, &beginInfo);
+        return commandBuffer;
+    }
+
+    void endSingleTimeCommands(VkCommandBuffer commandBuffer) {
+        vkEndCommandBuffer(commandBuffer);
+
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffer;
+
+        vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+        vkQueueWaitIdle(graphicsQueue);
+
+        vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+    }
+
+    void clearAccumulationImages() {
+        VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+
+        VkImageMemoryBarrier barriers[2]{};
+        for (int i = 0; i < 2; i++) {
+            barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barriers[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[i].image = accumulationImages[i];
+            barriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            barriers[i].subresourceRange.baseMipLevel = 0;
+            barriers[i].subresourceRange.levelCount = 1;
+            barriers[i].subresourceRange.baseArrayLayer = 0;
+            barriers[i].subresourceRange.layerCount = 1;
+            barriers[i].srcAccessMask = 0;
+            barriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        }
+
+        vkCmdPipelineBarrier(
+            commandBuffer,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0,
+            0, nullptr,
+            0, nullptr,
+            2, barriers);
+
+        VkClearColorValue clearColor = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        for (int i = 0; i < 2; i++) {
+            VkImageSubresourceRange range{};
+            range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            range.baseMipLevel = 0;
+            range.levelCount = 1;
+            range.baseArrayLayer = 0;
+            range.layerCount = 1;
+            vkCmdClearColorImage(commandBuffer, accumulationImages[i], VK_IMAGE_LAYOUT_GENERAL, &clearColor, 1, &range);
+        }
+
+        endSingleTimeCommands(commandBuffer);
+    }
+
+    void resetAccumulation() {
+        frameCount = 0;
+        clearAccumulationImages();
+    }
+
+    void createAccumulationResources() {
+        VkFormat accumulationFormat = VK_FORMAT_R32G32B32A32_SFLOAT;
+
+        for (int i = 0; i < 2; i++) {
+            VkImageCreateInfo imageInfo{};
+            imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+            imageInfo.imageType = VK_IMAGE_TYPE_2D;
+            imageInfo.extent.width = swapChainExtent.width;
+            imageInfo.extent.height = swapChainExtent.height;
+            imageInfo.extent.depth = 1;
+            imageInfo.mipLevels = 1;
+            imageInfo.arrayLayers = 1;
+            imageInfo.format = accumulationFormat;
+            imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+            imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+            imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+            if (vkCreateImage(device, &imageInfo, nullptr, &accumulationImages[i]) != VK_SUCCESS) {
+                throw std::runtime_error("failed to create accumulation image!");
+            }
+
+            VkMemoryRequirements memRequirements;
+            vkGetImageMemoryRequirements(device, accumulationImages[i], &memRequirements);
+
+            VkMemoryAllocateInfo allocInfo{};
+            allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            allocInfo.allocationSize = memRequirements.size;
+            allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+            if (vkAllocateMemory(device, &allocInfo, nullptr, &accumulationImageMemories[i]) != VK_SUCCESS) {
+                throw std::runtime_error("failed to allocate accumulation image memory!");
+            }
+
+            vkBindImageMemory(device, accumulationImages[i], accumulationImageMemories[i], 0);
+
+            VkImageViewCreateInfo viewInfo{};
+            viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            viewInfo.image = accumulationImages[i];
+            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            viewInfo.format = accumulationFormat;
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            viewInfo.subresourceRange.baseMipLevel = 0;
+            viewInfo.subresourceRange.levelCount = 1;
+            viewInfo.subresourceRange.baseArrayLayer = 0;
+            viewInfo.subresourceRange.layerCount = 1;
+
+            if (vkCreateImageView(device, &viewInfo, nullptr, &accumulationImageViews[i]) != VK_SUCCESS) {
+                throw std::runtime_error("failed to create accumulation image view!");
+            }
+        }
+
+        resetAccumulation();
+    }
+
+    void createDescriptorSetLayout() {
+        VkDescriptorSetLayoutBinding prevAccumBinding{};
+        prevAccumBinding.binding = 0;
+        prevAccumBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        prevAccumBinding.descriptorCount = 1;
+        prevAccumBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        prevAccumBinding.pImmutableSamplers = nullptr;
+
+        VkDescriptorSetLayoutBinding outAccumBinding{};
+        outAccumBinding.binding = 1;
+        outAccumBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        outAccumBinding.descriptorCount = 1;
+        outAccumBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        outAccumBinding.pImmutableSamplers = nullptr;
+
+        std::array<VkDescriptorSetLayoutBinding, 2> bindings = {prevAccumBinding, outAccumBinding};
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+        layoutInfo.pBindings = bindings.data();
+
+        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create descriptor set layout!");
+        }
+    }
+
+    void createDescriptorPool() {
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        poolSize.descriptorCount = 2;
+
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.maxSets = 1;
+
+        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create descriptor pool!");
+        }
+    }
+
+    void createDescriptorSets() {
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = descriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &descriptorSetLayout;
+
+        if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSets[0]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate descriptor sets!");
+        }
+    }
+
+    void updateAccumulationDescriptorSet(uint32_t inputIndex, uint32_t outputIndex) {
+        VkDescriptorImageInfo prevImageInfo{};
+        prevImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        prevImageInfo.imageView = accumulationImageViews[inputIndex];
+        prevImageInfo.sampler = VK_NULL_HANDLE;
+
+        VkDescriptorImageInfo outImageInfo{};
+        outImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        outImageInfo.imageView = accumulationImageViews[outputIndex];
+        outImageInfo.sampler = VK_NULL_HANDLE;
+
+        VkWriteDescriptorSet descriptorWrites[2]{};
+        descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrites[0].dstSet = descriptorSets[0];
+        descriptorWrites[0].dstBinding = 0;
+        descriptorWrites[0].dstArrayElement = 0;
+        descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        descriptorWrites[0].descriptorCount = 1;
+        descriptorWrites[0].pImageInfo = &prevImageInfo;
+
+        descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrites[1].dstSet = descriptorSets[0];
+        descriptorWrites[1].dstBinding = 1;
+        descriptorWrites[1].dstArrayElement = 0;
+        descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        descriptorWrites[1].descriptorCount = 1;
+        descriptorWrites[1].pImageInfo = &outImageInfo;
+
+        vkUpdateDescriptorSets(device, 2, descriptorWrites, 0, nullptr);
+    }
+
+    void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, uint32_t inputIndex, uint32_t outputIndex) {
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = 0;
+
+        if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+            throw std::runtime_error("failed to begin recording command buffer!");
+        }
+
+        VkMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(
+            commandBuffer,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0,
+            1, &barrier,
+            0, nullptr,
+            0, nullptr);
+
+        VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+
+        VkRenderPassBeginInfo renderPassInfo{};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        renderPassInfo.renderPass = renderPass;
+        renderPassInfo.framebuffer = swapChainFramebuffers[imageIndex];
+        renderPassInfo.renderArea.offset = {0, 0};
+        renderPassInfo.renderArea.extent = swapChainExtent;
+        renderPassInfo.clearValueCount = 1;
+        renderPassInfo.pClearValues = &clearColor;
+
+        vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[0], 0, nullptr);
+
+        CameraPushConstants cameraPushConstants{};
+        std::array<float, 3> origin = {0.0f, 0.0f, 0.0f};
+        std::array<float, 3> lookAt = {0.0f, 0.0f, -1.0f};
+        std::array<float, 3> up = {0.0f, 1.0f, 0.0f};
+
+        auto w = normalizeVec3(subtractVec3(origin, lookAt));
+        auto u = normalizeVec3(crossVec3(up, w));
+        auto v = crossVec3(w, u);
+
+        cameraPushConstants.origin[0] = origin[0];
+        cameraPushConstants.origin[1] = origin[1];
+        cameraPushConstants.origin[2] = origin[2];
+        cameraPushConstants.u[0] = u[0];
+        cameraPushConstants.u[1] = u[1];
+        cameraPushConstants.u[2] = u[2];
+        cameraPushConstants.v[0] = v[0];
+        cameraPushConstants.v[1] = v[1];
+        cameraPushConstants.v[2] = v[2];
+        cameraPushConstants.w[0] = w[0];
+        cameraPushConstants.w[1] = w[1];
+        cameraPushConstants.w[2] = w[2];
+        cameraPushConstants.sphereCenter[0] = sphereCenter[0];
+        cameraPushConstants.sphereCenter[1] = sphereCenter[1];
+        cameraPushConstants.sphereCenter[2] = sphereCenter[2];
+        cameraPushConstants.fov = 70.0f;
+        cameraPushConstants.aspect = static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height);
+        cameraPushConstants.width = static_cast<float>(swapChainExtent.width);
+        cameraPushConstants.height = static_cast<float>(swapChainExtent.height);
+        cameraPushConstants.frame = static_cast<float>(frameCount);
+
+        vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(cameraPushConstants), &cameraPushConstants);
+        vkCmdDraw(commandBuffer, 6, 1, 0, 0);
+        vkCmdEndRenderPass(commandBuffer);
+
+        if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+            throw std::runtime_error("failed to record command buffer!");
         }
     }
 
@@ -833,63 +1198,6 @@ private:
 
         if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers.data()) != VK_SUCCESS) {
             throw std::runtime_error("failed to allocate command buffers!");
-        }
-
-        for (size_t i = 0; i < commandBuffers.size(); i++) {
-            VkCommandBufferBeginInfo beginInfo{};
-            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-
-            if (vkBeginCommandBuffer(commandBuffers[i], &beginInfo) != VK_SUCCESS) {
-                throw std::runtime_error("failed to begin recording command buffer!");
-            }
-
-            VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
-
-            VkRenderPassBeginInfo renderPassInfo{};
-            renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-            renderPassInfo.renderPass = renderPass;
-            renderPassInfo.framebuffer = swapChainFramebuffers[i];
-            renderPassInfo.renderArea.offset = {0, 0};
-            renderPassInfo.renderArea.extent = swapChainExtent;
-            renderPassInfo.clearValueCount = 1;
-            renderPassInfo.pClearValues = &clearColor;
-
-            vkCmdBeginRenderPass(commandBuffers[i], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-            vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-
-            CameraPushConstants cameraPushConstants{};
-            std::array<float, 3> origin = {0.0f, 0.0f, 0.0f};
-            std::array<float, 3> lookAt = {0.0f, 0.0f, -1.0f};
-            std::array<float, 3> up = {0.0f, 1.0f, 0.0f};
-
-            auto w = normalizeVec3(subtractVec3(origin, lookAt));
-            auto u = normalizeVec3(crossVec3(up, w));
-            auto v = crossVec3(w, u);
-
-            cameraPushConstants.origin[0] = origin[0];
-            cameraPushConstants.origin[1] = origin[1];
-            cameraPushConstants.origin[2] = origin[2];
-            cameraPushConstants.u[0] = u[0];
-            cameraPushConstants.u[1] = u[1];
-            cameraPushConstants.u[2] = u[2];
-            cameraPushConstants.v[0] = v[0];
-            cameraPushConstants.v[1] = v[1];
-            cameraPushConstants.v[2] = v[2];
-            cameraPushConstants.w[0] = w[0];
-            cameraPushConstants.w[1] = w[1];
-            cameraPushConstants.w[2] = w[2];
-            cameraPushConstants.fov = 70.0f;
-            cameraPushConstants.aspect = static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height);
-            cameraPushConstants.width = static_cast<float>(swapChainExtent.width);
-            cameraPushConstants.height = static_cast<float>(swapChainExtent.height);
-
-            vkCmdPushConstants(commandBuffers[i], pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(cameraPushConstants), &cameraPushConstants);
-            vkCmdDraw(commandBuffers[i], 6, 1, 0, 0);
-            vkCmdEndRenderPass(commandBuffers[i]);
-
-            if (vkEndCommandBuffer(commandBuffers[i]) != VK_SUCCESS) {
-                throw std::runtime_error("failed to record command buffer!");
-            }
         }
     }
 
@@ -906,6 +1214,13 @@ private:
     void drawFrame() {
         uint32_t imageIndex;
         vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+
+        uint32_t inputIndex = frameCount % 2;
+        uint32_t outputIndex = 1 - inputIndex;
+        updateAccumulationDescriptorSet(inputIndex, outputIndex);
+
+        vkResetCommandBuffer(commandBuffers[imageIndex], 0);
+        recordCommandBuffer(commandBuffers[imageIndex], imageIndex, inputIndex, outputIndex);
 
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -940,6 +1255,8 @@ private:
 
         vkQueuePresentKHR(presentQueue, &presentInfo);
         vkQueueWaitIdle(presentQueue);
+
+        frameCount++;
     }
 };
 
