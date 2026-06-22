@@ -29,6 +29,23 @@ vec3 rayDirection(vec2 fragCoord) {
     return dir;
 }
 
+float intersectSphere(vec3 ro, vec3 rd, vec3 center, float radius) {
+    vec3 oc = ro - center;
+    float a = dot(rd, rd);
+    float b = 2.0 * dot(oc, rd);
+    float c = dot(oc, oc) - radius * radius;
+    float discriminant = b * b - 4.0 * a * c;
+    if (discriminant < 0.0) {
+        return -1.0;
+    }
+    float sqrtDisc = sqrt(discriminant);
+    float t0 = (-b - sqrtDisc) / (2.0 * a);
+    float t1 = (-b + sqrtDisc) / (2.0 * a);
+    if (t0 > 0.001) return t0;
+    if (t1 > 0.001) return t1;
+    return -1.0;
+}
+
 vec3 skyColor(vec3 direction) {
     vec3 unitDir = normalize(direction);
     float t = smoothstep(-0.2, 0.8, unitDir.y);
@@ -39,5 +56,14 @@ vec3 skyColor(vec3 direction) {
 
 void main() {
     vec3 direction = rayDirection(gl_FragCoord.xy);
-    outColor = vec4(skyColor(direction), 1.0);
+    vec3 sphereCenter = vec3(0.0, 0.0, -1.0);
+    float sphereRadius = 0.5;
+    float t = intersectSphere(pc.origin, direction, sphereCenter, sphereRadius);
+    if (t > 0.0) {
+        vec3 hit = pc.origin + t * direction;
+        vec3 normal = normalize(hit - sphereCenter);
+        outColor = vec4(normal * 0.5 + 0.5, 1.0);
+    } else {
+        outColor = vec4(skyColor(direction), 1.0);
+    }
 }
