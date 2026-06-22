@@ -10,7 +10,7 @@ layout(push_constant) uniform PushConstants {
     vec3 w;
     float pad3;
     vec3 sphereCenter;
-    float pad4;
+    float sphereFuzz;
     float fov;
     float aspect;
     float width;
@@ -39,7 +39,7 @@ vec3 randomInUnitSphere(inout uint seed) {
     do {
         p = 2.0 * vec3(randomFloat(seed), randomFloat(seed), randomFloat(seed)) - vec3(1.0);
     } while (dot(p, p) >= 1.0);
-    return p;
+    return normalize(p);
 }
 
 vec3 randomCosineDirection(inout uint seed) {
@@ -88,10 +88,25 @@ float intersectSphere(vec3 ro, vec3 rd, vec3 center, float radius) {
 
 vec3 skyColor(vec3 direction) {
     vec3 unitDir = normalize(direction);
-    float t = smoothstep(-0.2, 0.8, unitDir.y);
-    vec3 horizon = vec3(0.05, 0.1, 0.25);
-    vec3 zenith = vec3(0.3, 0.6, 1.0);
-    return mix(horizon, zenith, t * t);
+
+    // Sharp environment test pattern for reflection diagnostics.
+    if (unitDir.y > 0.2) {
+        float angle = atan(unitDir.x, unitDir.z);
+        float stripe = step(0.0, sin(8.0 * angle));
+        return mix(vec3(0.1, 0.25, 0.9), vec3(0.35, 0.8, 1.0), stripe);
+    }
+
+    if (unitDir.y > -0.2) {
+        float checker = step(0.0, sin(20.0 * unitDir.x) * sin(20.0 * unitDir.z));
+        return checker > 0.0 ? vec3(1.0, 0.9, 0.2) : vec3(0.1, 0.1, 0.4);
+    }
+
+    float groundStriping = step(0.0, sin(10.0 * unitDir.x));
+    return mix(vec3(0.05, 0.2, 0.05), vec3(0.4, 0.7, 0.2), groundStriping);
+}
+
+vec3 reflectDirection(vec3 incoming, vec3 normal) {
+    return incoming - 2.0 * dot(incoming, normal) * normal;
 }
 
 vec3 traceRay(vec3 origin, vec3 direction, inout uint seed) {
@@ -101,10 +116,13 @@ vec3 traceRay(vec3 origin, vec3 direction, inout uint seed) {
     if (t > 0.0) {
         vec3 hit = origin + t * direction;
         vec3 normal = normalize(hit - sphereCenter);
-        vec3 target = hit + randomHemisphere(normal, seed);
-        vec3 lambert = vec3(0.6, 0.6, 0.7);
-        float cosine = max(dot(normal, normalize(target - hit)), 0.0);
-        return lambert * cosine;
+        vec3 reflected = reflectDirection(normalize(direction), normal);
+        vec3 fuzzVector = pc.sphereFuzz * randomInUnitSphere(seed);
+        vec3 scattered = normalize(reflected + fuzzVector);
+        if (dot(scattered, normal) <= 0.0) {
+            return vec3(0.0);
+        }
+        return skyColor(scattered);
     }
     return skyColor(direction);
 }

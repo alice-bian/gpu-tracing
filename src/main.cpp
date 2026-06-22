@@ -155,7 +155,7 @@ struct CameraPushConstants {
     float w[3];
     float pad3;
     float sphereCenter[3];
-    float pad4;
+    float sphereFuzz;
     float fov;
     float aspect;
     float width;
@@ -377,7 +377,18 @@ private:
         std::array<float, 3>{-0.4f, 0.2f, -1.2f}
     };
     std::array<float, 3> sphereCenter = spherePositions[0];
+    std::array<float, 7> fuzzPresets{
+        0.0f,
+        0.05f,
+        0.15f,
+        0.3f,
+        0.45f,
+        0.65f,
+        0.85f
+    };
+    float sphereFuzz = fuzzPresets[0];
     uint32_t currentSphereIndex = 0;
+    uint32_t currentFuzzIndex = 0;
     uint32_t frameCount = 0;
 
     void initWindow() {
@@ -409,8 +420,17 @@ private:
         createSyncObjects();
     }
 
+    void updateWindowTitle() {
+        std::string title = "Hello Vulkan - Fuzz: ";
+        title += std::to_string(sphereFuzz);
+        glfwSetWindowTitle(window, title.c_str());
+    }
+
     void mainLoop() {
         bool resetKeyDown = false;
+        bool fuzzKeyDown = false;
+
+        updateWindowTitle();
 
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
@@ -423,6 +443,17 @@ private:
                 resetKeyDown = true;
             } else if (!rPressed) {
                 resetKeyDown = false;
+            }
+
+            bool fPressed = glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS;
+            if (fPressed && !fuzzKeyDown) {
+                currentFuzzIndex = (currentFuzzIndex + 1) % static_cast<uint32_t>(fuzzPresets.size());
+                sphereFuzz = fuzzPresets[currentFuzzIndex];
+                resetAccumulation();
+                updateWindowTitle();
+                fuzzKeyDown = true;
+            } else if (!fPressed) {
+                fuzzKeyDown = false;
             }
 
             drawFrame();
@@ -1177,6 +1208,7 @@ private:
         cameraPushConstants.width = static_cast<float>(swapChainExtent.width);
         cameraPushConstants.height = static_cast<float>(swapChainExtent.height);
         cameraPushConstants.frame = static_cast<float>(frameCount);
+        cameraPushConstants.sphereFuzz = sphereFuzz;
 
         vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(cameraPushConstants), &cameraPushConstants);
         vkCmdDraw(commandBuffer, 6, 1, 0, 0);
