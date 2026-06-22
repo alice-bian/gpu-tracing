@@ -3,12 +3,14 @@
 
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
+#include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <optional>
 #include <set>
 #include <string>
+#include <array>
 #include <vector>
 
 static const int WIDTH = 800;
@@ -104,11 +106,19 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
     createInfo.pUserData = nullptr;
 }
 
-static std::vector<char> readFile(const std::string& filename) {
+static std::filesystem::path getShaderDirectory() {
+    std::string shaderDir = SHADER_DIR;
+    if (!shaderDir.empty()) {
+        return std::filesystem::path(shaderDir);
+    }
+    return std::filesystem::current_path() / "build" / "shaders";
+}
+
+static std::vector<char> readFile(const std::filesystem::path& filename) {
     std::ifstream file(filename, std::ios::ate | std::ios::binary);
 
     if (!file.is_open()) {
-        throw std::runtime_error("failed to open file: " + filename);
+        throw std::runtime_error("failed to open file: " + filename.string());
     }
 
     size_t fileSize = static_cast<size_t>(file.tellg());
@@ -133,6 +143,38 @@ static VkShaderModule createShaderModule(VkDevice device, const std::vector<char
     }
 
     return shaderModule;
+}
+
+struct CameraPushConstants {
+    float origin[3];
+    float pad0;
+    float u[3];
+    float pad1;
+    float v[3];
+    float pad2;
+    float w[3];
+    float pad3;
+    float fov;
+    float aspect;
+    float width;
+    float height;
+};
+
+static std::array<float, 3> normalizeVec3(const std::array<float, 3>& v) {
+    float length = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    return {v[0] / length, v[1] / length, v[2] / length};
+}
+
+static std::array<float, 3> crossVec3(const std::array<float, 3>& a, const std::array<float, 3>& b) {
+    return {
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0]
+    };
+}
+
+static std::array<float, 3> subtractVec3(const std::array<float, 3>& a, const std::array<float, 3>& b) {
+    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
 }
 
 struct QueueFamilyIndices {
@@ -624,8 +666,9 @@ private:
     }
 
     void createGraphicsPipeline() {
-        auto vertShaderCode = readFile(std::string(SHADER_DIR) + "/fullscreen.vert.spv");
-        auto fragShaderCode = readFile(std::string(SHADER_DIR) + "/solid.frag.spv");
+        auto shaderDir = getShaderDirectory();
+        auto vertShaderCode = readFile(shaderDir / "fullscreen.vert.spv");
+        auto fragShaderCode = readFile(shaderDir / "solid.frag.spv");
 
         VkShaderModule vertShaderModule = createShaderModule(device, vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(device, fragShaderCode);
@@ -704,10 +747,17 @@ private:
         colorBlending.blendConstants[2] = 0.0f;
         colorBlending.blendConstants[3] = 0.0f;
 
+        VkPushConstantRange pushConstantRange{};
+        pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        pushConstantRange.offset = 0;
+        pushConstantRange.size = sizeof(CameraPushConstants);
+
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipelineLayoutInfo.setLayoutCount = 0;
-        pipelineLayoutInfo.pushConstantRangeCount = 0;
+        pipelineLayoutInfo.pSetLayouts = nullptr;
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
         if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create pipeline layout!");
@@ -806,6 +856,34 @@ private:
 
             vkCmdBeginRenderPass(commandBuffers[i], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
             vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+
+            CameraPushConstants cameraPushConstants{};
+            std::array<float, 3> origin = {0.0f, 0.0f, 0.0f};
+            std::array<float, 3> lookAt = {0.0f, 0.0f, -1.0f};
+            std::array<float, 3> up = {0.0f, 1.0f, 0.0f};
+
+            auto w = normalizeVec3(subtractVec3(origin, lookAt));
+            auto u = normalizeVec3(crossVec3(up, w));
+            auto v = crossVec3(w, u);
+
+            cameraPushConstants.origin[0] = origin[0];
+            cameraPushConstants.origin[1] = origin[1];
+            cameraPushConstants.origin[2] = origin[2];
+            cameraPushConstants.u[0] = u[0];
+            cameraPushConstants.u[1] = u[1];
+            cameraPushConstants.u[2] = u[2];
+            cameraPushConstants.v[0] = v[0];
+            cameraPushConstants.v[1] = v[1];
+            cameraPushConstants.v[2] = v[2];
+            cameraPushConstants.w[0] = w[0];
+            cameraPushConstants.w[1] = w[1];
+            cameraPushConstants.w[2] = w[2];
+            cameraPushConstants.fov = 70.0f;
+            cameraPushConstants.aspect = static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height);
+            cameraPushConstants.width = static_cast<float>(swapChainExtent.width);
+            cameraPushConstants.height = static_cast<float>(swapChainExtent.height);
+
+            vkCmdPushConstants(commandBuffers[i], pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(cameraPushConstants), &cameraPushConstants);
             vkCmdDraw(commandBuffers[i], 6, 1, 0, 0);
             vkCmdEndRenderPass(commandBuffers[i]);
 

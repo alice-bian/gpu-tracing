@@ -45,7 +45,7 @@ foreach(SHADER_SRC IN LISTS SHADER_SOURCE_FILES)
 
     add_custom_command(
         OUTPUT "${SHADER_OUT}"
-        COMMAND "${SHADER_COMPILER}" ${SHADER_COMPILER_FLAGS} --target-env=vulkan1 "${SHADER_SRC}" -o "${SHADER_OUT}"
+        COMMAND "${SHADER_COMPILER}" ${SHADER_COMPILER_FLAGS} "${SHADER_SRC}" -o "${SHADER_OUT}"
         DEPENDS "${SHADER_SRC}"
         COMMENT "Compiling ${SRC_REL} to SPIR-V"
     )
