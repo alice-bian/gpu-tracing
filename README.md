@@ -1,10 +1,20 @@
-# gpu-tracing Vulkan Starter
+# gpu-tracing
 
-Minimal C++/Vulkan starter to open a GLFW window and initialize a Vulkan instance.
+A small C++/Vulkan renderer that uses a fullscreen triangle and a fragment shader to trace a simple scene with progressive accumulation.
+
+## What it does
+
+- Renders with a Vulkan + GLFW setup and a shader-based path tracer
+- Accumulates frames over time for a progressively refined image
+- Supports two material modes:
+  - Metal with optional fuzz
+  - Glass with configurable refractive index and optional hollow-shell behavior
+- Includes simple scene interaction and reset controls for debugging accumulation and material changes
 
 ## Requirements
+
 - Vulkan SDK installed (LunarG or equivalent)
-- GLFW installed via system package manager or `vcpkg`
+- GLFW installed via system package manager or vcpkg
 - CMake 3.16+
 
 ## Build
@@ -27,6 +37,13 @@ cmake --build build --config Release
 build\Release\hello_vulkan.exe
 ```
 
+## Controls
+
+- R: move the sphere to the next test position and reset accumulation
+- F: cycle the metal fuzz amount
+- T: toggle between Metal and Glass modes
+- I: cycle through the glass presets, including hollow-shell variants
+
 ## Notes
 
-This sample creates a Vulkan instance, debug messenger, GLFW window, and a Vulkan surface. It does not yet perform rendering.
+The renderer uses push constants and image-based accumulation in the shader pipeline. The main implementation lives in src/main.cpp and the shader logic is in shaders/solid.frag.
