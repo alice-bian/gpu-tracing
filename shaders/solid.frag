@@ -11,6 +11,9 @@ layout(push_constant) uniform PushConstants {
     float pad3;
     vec3 sphereCenter;
     float sphereFuzz;
+    float materialType;
+    float sphereIor;
+    float hollowShell;
     float fov;
     float aspect;
     float width;
@@ -89,24 +92,26 @@ float intersectSphere(vec3 ro, vec3 rd, vec3 center, float radius) {
 vec3 skyColor(vec3 direction) {
     vec3 unitDir = normalize(direction);
 
-    // Sharp environment test pattern for reflection diagnostics.
-    if (unitDir.y > 0.2) {
-        float angle = atan(unitDir.x, unitDir.z);
-        float stripe = step(0.0, sin(8.0 * angle));
-        return mix(vec3(0.1, 0.25, 0.9), vec3(0.35, 0.8, 1.0), stripe);
+    if (unitDir.y > 0.35) {
+        return vec3(0.15, 0.25, 0.8);
     }
-
-    if (unitDir.y > -0.2) {
-        float checker = step(0.0, sin(20.0 * unitDir.x) * sin(20.0 * unitDir.z));
-        return checker > 0.0 ? vec3(1.0, 0.9, 0.2) : vec3(0.1, 0.1, 0.4);
+    if (unitDir.y > -0.1) {
+        return vec3(0.9, 0.85, 0.25);
     }
-
-    float groundStriping = step(0.0, sin(10.0 * unitDir.x));
-    return mix(vec3(0.05, 0.2, 0.05), vec3(0.4, 0.7, 0.2), groundStriping);
+    return vec3(0.1, 0.2, 0.08);
 }
 
 vec3 reflectDirection(vec3 incoming, vec3 normal) {
     return incoming - 2.0 * dot(incoming, normal) * normal;
+}
+
+float schlick(float cosine, float ref_idx) {
+    if (abs(ref_idx - 1.0) < 1e-6) {
+        return 0.0;
+    }
+    float r0 = (1.0 - ref_idx) / (1.0 + ref_idx);
+    r0 = r0 * r0;
+    return r0 + (1.0 - r0) * pow(1.0 - cosine, 5.0);
 }
 
 vec3 traceRay(vec3 origin, vec3 direction, inout uint seed) {
@@ -116,13 +121,79 @@ vec3 traceRay(vec3 origin, vec3 direction, inout uint seed) {
     if (t > 0.0) {
         vec3 hit = origin + t * direction;
         vec3 normal = normalize(hit - sphereCenter);
-        vec3 reflected = reflectDirection(normalize(direction), normal);
-        vec3 fuzzVector = pc.sphereFuzz * randomInUnitSphere(seed);
-        vec3 scattered = normalize(reflected + fuzzVector);
-        if (dot(scattered, normal) <= 0.0) {
-            return vec3(0.0);
+
+        if (pc.materialType < 0.5) {
+            vec3 reflected = reflectDirection(normalize(direction), normal);
+            vec3 fuzzVector = pc.sphereFuzz * randomInUnitSphere(seed);
+            vec3 scattered = normalize(reflected + fuzzVector);
+            if (dot(scattered, normal) <= 0.0) {
+                return vec3(0.0);
+            }
+            return skyColor(scattered);
         }
-        return skyColor(scattered);
+
+        bool frontFace = dot(direction, normal) < 0.0;
+        vec3 outwardNormal = frontFace ? normal : -normal;
+        float ratio = frontFace ? (1.0 / pc.sphereIor) : pc.sphereIor;
+        float cosTheta = min(dot(-normalize(direction), outwardNormal), 1.0);
+        float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+        bool cannotRefract = ratio * sinTheta > 1.0;
+        float reflectProbability = schlick(cosTheta, pc.sphereIor);
+
+        vec3 rayOut;
+        if (cannotRefract || reflectProbability > randomFloat(seed)) {
+            rayOut = reflectDirection(normalize(direction), normal);
+        } else {
+            vec3 refracted = refract(normalize(direction), outwardNormal, ratio);
+            vec3 insideOrigin = hit + refracted * 0.001;
+            float tInside = intersectSphere(insideOrigin, refracted, sphereCenter, sphereRadius);
+            if (tInside < 0.0) {
+                rayOut = reflectDirection(normalize(direction), normal);
+            } else {
+                vec3 exitHit = insideOrigin + refracted * tInside;
+                vec3 exitNormal = normalize(exitHit - sphereCenter);
+                if (dot(refracted, exitNormal) > 0.0) {
+                    exitNormal = -exitNormal;
+                }
+
+                if (pc.hollowShell > 0.5) {
+                    float innerRadius = 0.45;
+                    float tInner = intersectSphere(insideOrigin, refracted, sphereCenter, innerRadius);
+                    if (tInner > 0.0) {
+                        vec3 innerHit = insideOrigin + refracted * tInner;
+                        vec3 innerNormal = normalize(innerHit - sphereCenter);
+                        float cosThetaInner = min(dot(-refracted, innerNormal), 1.0);
+                        float sinThetaInner = sqrt(max(0.0, 1.0 - cosThetaInner * cosThetaInner));
+                        bool cannotRefractInner = pc.sphereIor * sinThetaInner > 1.0;
+                        if (cannotRefractInner) {
+                            rayOut = reflectDirection(refracted, innerNormal);
+                        } else {
+                            vec3 innerRefracted = refract(refracted, innerNormal, 1.0 / pc.sphereIor);
+                            if (length(innerRefracted) == 0.0) {
+                                rayOut = reflectDirection(refracted, innerNormal);
+                            } else {
+                                rayOut = innerRefracted;
+                            }
+                        }
+                    } else {
+                        vec3 exitRefracted = refract(refracted, exitNormal, pc.sphereIor);
+                        if (length(exitRefracted) == 0.0) {
+                            rayOut = reflectDirection(normalize(direction), normal);
+                        } else {
+                            rayOut = exitRefracted;
+                        }
+                    }
+                } else {
+                    vec3 exitRefracted = refract(refracted, exitNormal, pc.sphereIor);
+                    if (length(exitRefracted) == 0.0) {
+                        rayOut = reflectDirection(normalize(direction), normal);
+                    } else {
+                        rayOut = exitRefracted;
+                    }
+                }
+            }
+        }
+        return skyColor(rayOut);
     }
     return skyColor(direction);
 }

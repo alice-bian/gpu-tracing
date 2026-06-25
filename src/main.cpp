@@ -156,6 +156,9 @@ struct CameraPushConstants {
     float pad3;
     float sphereCenter[3];
     float sphereFuzz;
+    float materialType;
+    float sphereIor;
+    float hollowShell;
     float fov;
     float aspect;
     float width;
@@ -386,9 +389,25 @@ private:
         0.65f,
         0.85f
     };
+    struct GlassPreset {
+        float ior;
+        float hollow;
+    };
+    std::array<GlassPreset, 6> glassPresets{
+        GlassPreset{1.0f, 0.0f},
+        GlassPreset{1.0f, 1.0f},
+        GlassPreset{1.33f, 0.0f},
+        GlassPreset{1.5f, 0.0f},
+        GlassPreset{1.5f, 1.0f},
+        GlassPreset{2.4f, 0.0f}
+    };
     float sphereFuzz = fuzzPresets[0];
+    float sphereIor = glassPresets[0].ior;
+    float hollowShell = glassPresets[0].hollow;
+    bool useGlass = false;
     uint32_t currentSphereIndex = 0;
     uint32_t currentFuzzIndex = 0;
+    uint32_t currentIorIndex = 0;
     uint32_t frameCount = 0;
 
     void initWindow() {
@@ -421,14 +440,25 @@ private:
     }
 
     void updateWindowTitle() {
-        std::string title = "Hello Vulkan - Fuzz: ";
-        title += std::to_string(sphereFuzz);
+        std::string title = useGlass ? "Glass" : "Metal";
+        title += " ";
+        if (useGlass) {
+            title += "I=" + std::to_string(sphereIor);
+            if (hollowShell > 0.5f) {
+                title += " hollow";
+            }
+        } else {
+            title += "F=" + std::to_string(sphereFuzz);
+        }
+        title += " (R,I,T)";
         glfwSetWindowTitle(window, title.c_str());
     }
 
     void mainLoop() {
         bool resetKeyDown = false;
         bool fuzzKeyDown = false;
+        bool iorKeyDown = false;
+        bool toggleKeyDown = false;
 
         updateWindowTitle();
 
@@ -445,15 +475,41 @@ private:
                 resetKeyDown = false;
             }
 
+            bool iPressed = glfwGetKey(window, GLFW_KEY_I) == GLFW_PRESS;
+            if (iPressed && !iorKeyDown) {
+                if (useGlass) {
+                    currentIorIndex = (currentIorIndex + 1) % static_cast<uint32_t>(glassPresets.size());
+                    sphereIor = glassPresets[currentIorIndex].ior;
+                    hollowShell = glassPresets[currentIorIndex].hollow;
+                    resetAccumulation();
+                    updateWindowTitle();
+                }
+                iorKeyDown = true;
+            } else if (!iPressed) {
+                iorKeyDown = false;
+            }
+
             bool fPressed = glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS;
             if (fPressed && !fuzzKeyDown) {
-                currentFuzzIndex = (currentFuzzIndex + 1) % static_cast<uint32_t>(fuzzPresets.size());
-                sphereFuzz = fuzzPresets[currentFuzzIndex];
-                resetAccumulation();
-                updateWindowTitle();
+                if (!useGlass) {
+                    currentFuzzIndex = (currentFuzzIndex + 1) % static_cast<uint32_t>(fuzzPresets.size());
+                    sphereFuzz = fuzzPresets[currentFuzzIndex];
+                    resetAccumulation();
+                    updateWindowTitle();
+                }
                 fuzzKeyDown = true;
             } else if (!fPressed) {
                 fuzzKeyDown = false;
+            }
+
+            bool tPressed = glfwGetKey(window, GLFW_KEY_T) == GLFW_PRESS;
+            if (tPressed && !toggleKeyDown) {
+                useGlass = !useGlass;
+                resetAccumulation();
+                updateWindowTitle();
+                toggleKeyDown = true;
+            } else if (!tPressed) {
+                toggleKeyDown = false;
             }
 
             drawFrame();
@@ -1209,6 +1265,9 @@ private:
         cameraPushConstants.height = static_cast<float>(swapChainExtent.height);
         cameraPushConstants.frame = static_cast<float>(frameCount);
         cameraPushConstants.sphereFuzz = sphereFuzz;
+        cameraPushConstants.materialType = useGlass ? 1.0f : 0.0f;
+        cameraPushConstants.sphereIor = sphereIor;
+        cameraPushConstants.hollowShell = hollowShell;
 
         vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(cameraPushConstants), &cameraPushConstants);
         vkCmdDraw(commandBuffer, 6, 1, 0, 0);
