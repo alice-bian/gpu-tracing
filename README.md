@@ -43,6 +43,16 @@ build\Release\hello_vulkan.exe
 - F: cycle the metal fuzz amount
 - T: toggle between Metal and Glass modes
 - I: cycle through the glass presets, including hollow-shell variants
+- W/A/S/D: move the camera (forward/left/back/right)
+- Left mouse click: capture/release mouse look
+- Mouse move (while captured): yaw/pitch look
+- Esc: release mouse capture
+
+## Troubleshooting
+
+- If CMake reports a generator mismatch for an existing build folder, either:
+  - rerun CMake with the same generator that was used before, or
+  - delete the build directory and reconfigure with your desired generator.
 
 ## Notes
 

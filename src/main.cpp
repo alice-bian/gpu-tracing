@@ -168,6 +168,9 @@ struct CameraPushConstants {
 
 static std::array<float, 3> normalizeVec3(const std::array<float, 3>& v) {
     float length = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (length < 1e-8f) {
+        return {0.0f, 0.0f, 0.0f};
+    }
     return {v[0] / length, v[1] / length, v[2] / length};
 }
 
@@ -177,10 +180,6 @@ static std::array<float, 3> crossVec3(const std::array<float, 3>& a, const std::
         a[2] * b[0] - a[0] * b[2],
         a[0] * b[1] - a[1] * b[0]
     };
-}
-
-static std::array<float, 3> subtractVec3(const std::array<float, 3>& a, const std::array<float, 3>& b) {
-    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
 }
 
 struct QueueFamilyIndices {
@@ -379,7 +378,7 @@ private:
         std::array<float, 3>{0.6f, 0.1f, -0.6f},
         std::array<float, 3>{-0.4f, 0.2f, -1.2f}
     };
-    std::array<float, 3> sphereCenter = spherePositions[0];
+    std::array<float, 3> sphereCenter = spherePositions[1];
     std::array<float, 7> fuzzPresets{
         0.0f,
         0.05f,
@@ -402,13 +401,131 @@ private:
         GlassPreset{2.4f, 0.0f}
     };
     float sphereFuzz = fuzzPresets[0];
-    float sphereIor = glassPresets[0].ior;
-    float hollowShell = glassPresets[0].hollow;
-    bool useGlass = false;
-    uint32_t currentSphereIndex = 0;
+    float sphereIor = glassPresets[3].ior;
+    float hollowShell = glassPresets[3].hollow;
+    bool useGlass = true;
+    uint32_t currentSphereIndex = 1;
     uint32_t currentFuzzIndex = 0;
-    uint32_t currentIorIndex = 0;
+    uint32_t currentIorIndex = 3;
     uint32_t frameCount = 0;
+    std::array<float, 3> cameraPosition = {0.0f, 0.0f, 0.0f};
+    float cameraYaw = -90.0f;
+    float cameraPitch = 0.0f;
+    float cameraMoveSpeed = 3.5f;
+    float mouseSensitivity = 0.1f;
+    bool mouseCaptured = false;
+    bool mouseToggleRequested = false;
+    bool escapeKeyDown = false;
+    bool firstMouseSample = true;
+    double lastMouseX = 0.0;
+    double lastMouseY = 0.0;
+
+    static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
+        (void)mods;
+        if (button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS) {
+            return;
+        }
+        auto* app = reinterpret_cast<HelloVulkan*>(glfwGetWindowUserPointer(window));
+        if (app != nullptr) {
+            app->mouseToggleRequested = true;
+        }
+    }
+
+    void setMouseCapture(bool capture) {
+        mouseCaptured = capture;
+        glfwSetInputMode(window, GLFW_CURSOR, capture ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+        if (glfwRawMouseMotionSupported()) {
+            glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, capture ? GLFW_TRUE : GLFW_FALSE);
+        }
+        firstMouseSample = true;
+    }
+
+    static float degreesToRadians(float degrees) {
+        return degrees * 0.01745329251994329577f;
+    }
+
+    std::array<float, 3> getCameraForward() const {
+        float yawRad = degreesToRadians(cameraYaw);
+        float pitchRad = degreesToRadians(cameraPitch);
+        return normalizeVec3({
+            std::cos(yawRad) * std::cos(pitchRad),
+            std::sin(pitchRad),
+            std::sin(yawRad) * std::cos(pitchRad)
+        });
+    }
+
+    bool updateCamera(float deltaTime) {
+        bool cameraChanged = false;
+
+        std::array<float, 3> worldUp = {0.0f, 1.0f, 0.0f};
+        std::array<float, 3> forward = getCameraForward();
+        std::array<float, 3> right = normalizeVec3(crossVec3(forward, worldUp));
+        std::array<float, 3> moveInput = {0.0f, 0.0f, 0.0f};
+
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+            moveInput[0] += forward[0];
+            moveInput[1] += forward[1];
+            moveInput[2] += forward[2];
+        }
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
+            moveInput[0] -= forward[0];
+            moveInput[1] -= forward[1];
+            moveInput[2] -= forward[2];
+        }
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
+            moveInput[0] += right[0];
+            moveInput[1] += right[1];
+            moveInput[2] += right[2];
+        }
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
+            moveInput[0] -= right[0];
+            moveInput[1] -= right[1];
+            moveInput[2] -= right[2];
+        }
+
+        float moveLengthSquared = moveInput[0] * moveInput[0] +
+                                  moveInput[1] * moveInput[1] +
+                                  moveInput[2] * moveInput[2];
+        if (moveLengthSquared > 0.0f) {
+            std::array<float, 3> moveDir = normalizeVec3(moveInput);
+            float velocity = cameraMoveSpeed * deltaTime;
+            cameraPosition[0] += moveDir[0] * velocity;
+            cameraPosition[1] += moveDir[1] * velocity;
+            cameraPosition[2] += moveDir[2] * velocity;
+            cameraChanged = true;
+        }
+
+        if (mouseCaptured) {
+            double cursorX = 0.0;
+            double cursorY = 0.0;
+            glfwGetCursorPos(window, &cursorX, &cursorY);
+            if (firstMouseSample) {
+                lastMouseX = cursorX;
+                lastMouseY = cursorY;
+                firstMouseSample = false;
+            }
+
+            float xOffset = static_cast<float>(cursorX - lastMouseX);
+            float yOffset = static_cast<float>(lastMouseY - cursorY);
+            lastMouseX = cursorX;
+            lastMouseY = cursorY;
+
+            if (xOffset != 0.0f || yOffset != 0.0f) {
+                cameraYaw += xOffset * mouseSensitivity;
+                cameraPitch += yOffset * mouseSensitivity;
+
+                if (cameraPitch > 89.0f) {
+                    cameraPitch = 89.0f;
+                }
+                if (cameraPitch < -89.0f) {
+                    cameraPitch = -89.0f;
+                }
+                cameraChanged = true;
+            }
+        }
+
+        return cameraChanged;
+    }
 
     void initWindow() {
         glfwInit();
@@ -417,6 +534,8 @@ private:
         glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
         window = glfwCreateWindow(WIDTH, HEIGHT, "Hello Vulkan", nullptr, nullptr);
+        glfwSetWindowUserPointer(window, this);
+        glfwSetMouseButtonCallback(window, mouseButtonCallback);
     }
 
     void initVulkan() {
@@ -450,7 +569,7 @@ private:
         } else {
             title += "F=" + std::to_string(sphereFuzz);
         }
-        title += " (R,I,T)";
+        title += " (R,I,T,WASD,Mouse)";
         glfwSetWindowTitle(window, title.c_str());
     }
 
@@ -459,11 +578,27 @@ private:
         bool fuzzKeyDown = false;
         bool iorKeyDown = false;
         bool toggleKeyDown = false;
+        double lastFrameTime = glfwGetTime();
 
         updateWindowTitle();
 
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
+
+            if (mouseToggleRequested) {
+                setMouseCapture(!mouseCaptured);
+                mouseToggleRequested = false;
+            }
+
+            bool escPressed = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+            if (escPressed && !escapeKeyDown && mouseCaptured) {
+                setMouseCapture(false);
+            }
+            escapeKeyDown = escPressed;
+
+            double currentFrameTime = glfwGetTime();
+            float deltaTime = static_cast<float>(currentFrameTime - lastFrameTime);
+            lastFrameTime = currentFrameTime;
 
             bool rPressed = glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS;
             if (rPressed && !resetKeyDown) {
@@ -510,6 +645,10 @@ private:
                 toggleKeyDown = true;
             } else if (!tPressed) {
                 toggleKeyDown = false;
+            }
+
+            if (updateCamera(deltaTime)) {
+                resetAccumulation();
             }
 
             drawFrame();
@@ -1198,7 +1337,7 @@ private:
         vkUpdateDescriptorSets(device, 2, descriptorWrites, 0, nullptr);
     }
 
-    void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, uint32_t inputIndex, uint32_t outputIndex) {
+    void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         beginInfo.flags = 0;
@@ -1236,13 +1375,12 @@ private:
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[0], 0, nullptr);
 
         CameraPushConstants cameraPushConstants{};
-        std::array<float, 3> origin = {0.0f, 0.0f, 0.0f};
-        std::array<float, 3> lookAt = {0.0f, 0.0f, -1.0f};
-        std::array<float, 3> up = {0.0f, 1.0f, 0.0f};
-
-        auto w = normalizeVec3(subtractVec3(origin, lookAt));
-        auto u = normalizeVec3(crossVec3(up, w));
-        auto v = crossVec3(w, u);
+        std::array<float, 3> origin = cameraPosition;
+        std::array<float, 3> worldUp = {0.0f, 1.0f, 0.0f};
+        std::array<float, 3> forward = getCameraForward();
+        std::array<float, 3> w = {-forward[0], -forward[1], -forward[2]};
+        auto u = normalizeVec3(crossVec3(worldUp, w));
+        auto v = normalizeVec3(crossVec3(w, u));
 
         cameraPushConstants.origin[0] = origin[0];
         cameraPushConstants.origin[1] = origin[1];
@@ -1304,14 +1442,19 @@ private:
 
     void drawFrame() {
         uint32_t imageIndex;
-        vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+        VkResult acquireResult = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+        if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
+            throw std::runtime_error("failed to acquire swap chain image! VkResult=" + std::to_string(acquireResult));
+        }
+
+        vkQueueWaitIdle(graphicsQueue);
 
         uint32_t inputIndex = frameCount % 2;
         uint32_t outputIndex = 1 - inputIndex;
         updateAccumulationDescriptorSet(inputIndex, outputIndex);
 
         vkResetCommandBuffer(commandBuffers[imageIndex], 0);
-        recordCommandBuffer(commandBuffers[imageIndex], imageIndex, inputIndex, outputIndex);
+        recordCommandBuffer(commandBuffers[imageIndex], imageIndex);
 
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1329,8 +1472,9 @@ private:
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = signalSemaphores;
 
-        if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
-            throw std::runtime_error("failed to submit draw command buffer!");
+        VkResult submitResult = vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+        if (submitResult != VK_SUCCESS) {
+            throw std::runtime_error("failed to submit draw command buffer! VkResult=" + std::to_string(submitResult));
         }
 
         VkPresentInfoKHR presentInfo{};
@@ -1344,7 +1488,10 @@ private:
         presentInfo.pImageIndices = &imageIndex;
         presentInfo.pResults = nullptr;
 
-        vkQueuePresentKHR(presentQueue, &presentInfo);
+        VkResult presentResult = vkQueuePresentKHR(presentQueue, &presentInfo);
+        if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR) {
+            throw std::runtime_error("failed to present swap chain image! VkResult=" + std::to_string(presentResult));
+        }
         vkQueueWaitIdle(presentQueue);
 
         frameCount++;
