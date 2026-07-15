@@ -373,6 +373,7 @@ private:
     VkImage accumulationImages[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkDeviceMemory accumulationImageMemories[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkImageView accumulationImageViews[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    bool accumulationImagesInitialized = false;
     std::array<std::array<float, 3>, 3> spherePositions{
         std::array<float, 3>{0.0f, 0.0f, -1.0f},
         std::array<float, 3>{0.6f, 0.1f, -0.6f},
@@ -1153,7 +1154,7 @@ private:
         VkImageMemoryBarrier barriers[2]{};
         for (int i = 0; i < 2; i++) {
             barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barriers[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            barriers[i].oldLayout = accumulationImagesInitialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
             barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
             barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1188,11 +1189,11 @@ private:
         }
 
         endSingleTimeCommands(commandBuffer);
+        accumulationImagesInitialized = true;
     }
 
     void resetAccumulation() {
         frameCount = 0;
-        clearAccumulationImages();
     }
 
     void createAccumulationResources() {

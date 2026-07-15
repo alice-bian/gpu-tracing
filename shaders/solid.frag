@@ -33,16 +33,19 @@ uint wangHash(uint seed) {
 }
 
 float randomFloat(inout uint seed) {
-    seed = wangHash(seed);
+    seed = wangHash(seed + 0x9E3779B9u);
     return float(seed) / 4294967296.0;
 }
 
 vec3 randomInUnitSphere(inout uint seed) {
-    vec3 p;
-    do {
-        p = 2.0 * vec3(randomFloat(seed), randomFloat(seed), randomFloat(seed)) - vec3(1.0);
-    } while (dot(p, p) >= 1.0);
-    return normalize(p);
+    for (int i = 0; i < 16; i++) {
+        vec3 p = 2.0 * vec3(randomFloat(seed), randomFloat(seed), randomFloat(seed)) - vec3(1.0);
+        float len2 = dot(p, p);
+        if (len2 < 1.0 && len2 >= 1e-8) {
+            return p;
+        }
+    }
+    return vec3(0.0, 0.0, 1.0);
 }
 
 vec3 randomCosineDirection(inout uint seed) {
@@ -90,7 +93,8 @@ float intersectSphere(vec3 ro, vec3 rd, vec3 center, float radius) {
 }
 
 vec3 skyColor(vec3 direction) {
-    vec3 unitDir = normalize(direction);
+    float len2 = dot(direction, direction);
+    vec3 unitDir = len2 > 1e-10 ? direction * inversesqrt(len2) : vec3(0.0, 1.0, 0.0);
 
     if (unitDir.y > 0.35) {
         return vec3(0.15, 0.25, 0.8);
@@ -123,11 +127,20 @@ vec3 traceRay(vec3 origin, vec3 direction, inout uint seed) {
         vec3 normal = normalize(hit - sphereCenter);
 
         if (pc.materialType < 0.5) {
-            vec3 reflected = reflectDirection(normalize(direction), normal);
+            vec3 metalNormal = dot(direction, normal) < 0.0 ? normal : -normal;
+            vec3 reflected = normalize(reflectDirection(normalize(direction), metalNormal));
+            if (pc.sphereFuzz <= 1e-6) {
+                return skyColor(reflected);
+            }
             vec3 fuzzVector = pc.sphereFuzz * randomInUnitSphere(seed);
-            vec3 scattered = normalize(reflected + fuzzVector);
-            if (dot(scattered, normal) <= 0.0) {
-                return vec3(0.0);
+            vec3 candidate = reflected + fuzzVector;
+            float candidateLen2 = dot(candidate, candidate);
+            if (candidateLen2 < 1e-8) {
+                return skyColor(reflected);
+            }
+            vec3 scattered = candidate * inversesqrt(candidateLen2);
+            if (dot(scattered, metalNormal) <= 0.0) {
+                return skyColor(reflected);
             }
             return skyColor(scattered);
         }
