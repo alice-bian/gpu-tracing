@@ -19,10 +19,10 @@ find_program(GLSLANG_VALIDATOR_EXECUTABLE
 
 if(GLSLC_EXECUTABLE)
     set(SHADER_COMPILER "${GLSLC_EXECUTABLE}")
-    set(SHADER_COMPILER_FLAGS "")
+    set(SHADER_COMPILER_FLAGS "--target-env=vulkan1.2")
 elseif(GLSLANG_VALIDATOR_EXECUTABLE)
     set(SHADER_COMPILER "${GLSLANG_VALIDATOR_EXECUTABLE}")
-    set(SHADER_COMPILER_FLAGS "-V")
+    set(SHADER_COMPILER_FLAGS "-V --target-env vulkan1.2")
 else()
     message(FATAL_ERROR "Neither glslc nor glslangValidator was found. Make sure Vulkan SDK is installed and VULKAN_SDK is set.")
 endif()
@@ -33,7 +33,9 @@ file(MAKE_DIRECTORY "${SHADER_BINARY_DIR}")
 
 file(GLOB_RECURSE SHADER_SOURCE_FILES
     "${SHADER_SOURCE_DIR}/*.vert"
-    "${SHADER_SOURCE_DIR}/*.frag"
+    "${SHADER_SOURCE_DIR}/*.rgen"
+    "${SHADER_SOURCE_DIR}/*.rmiss"
+    "${SHADER_SOURCE_DIR}/*.rchit"
     "${SHADER_SOURCE_DIR}/*.glsl"
 )
 
