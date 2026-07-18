@@ -2071,7 +2071,7 @@ private:
         vkCmdPipelineBarrier(
             commandBuffer,
             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
             0,
             0, nullptr,
             0, nullptr,
@@ -2094,6 +2094,9 @@ private:
 
     void resetAccumulation() {
         frameCount = 0;
+        if (accumulationImageViews[0] != VK_NULL_HANDLE && accumulationImageViews[1] != VK_NULL_HANDLE) {
+            clearAccumulationImages();
+        }
     }
 
     void createAccumulationResources() {

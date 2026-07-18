@@ -72,17 +72,10 @@ vec3 randomHemisphere(vec3 normal, inout uint seed) {
     return direction.x * tangent + direction.y * bitangent + direction.z * normal;
 }
 
-vec3 skyColor(vec3 direction) {
-    float len2 = dot(direction, direction);
-    vec3 unitDir = len2 > 1e-10 ? direction * inversesqrt(len2) : vec3(0.0, 1.0, 0.0);
+vec3 sunnyDayBackground(vec3 direction);
 
-    if (unitDir.y > 0.35) {
-        return vec3(0.15, 0.25, 0.8);
-    }
-    if (unitDir.y > -0.1) {
-        return vec3(0.9, 0.85, 0.25);
-    }
-    return vec3(0.1, 0.2, 0.08);
+vec3 skyColor(vec3 direction) {
+    return sunnyDayBackground(direction);
 }
 
 vec3 reflectDirection(vec3 incoming, vec3 normal) {
@@ -100,6 +93,73 @@ float schlick(float cosine, float ref_idx) {
 
 bool nearZero(vec3 v) {
     return dot(v, v) < 1e-8;
+}
+
+float hash21(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+
+float noise2(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+
+    float a = hash21(i);
+    float b = hash21(i + vec2(1.0, 0.0));
+    float c = hash21(i + vec2(0.0, 1.0));
+    float d = hash21(i + vec2(1.0, 1.0));
+
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+float fbm(vec2 p) {
+    float value = 0.0;
+    float amplitude = 0.5;
+    for (int octave = 0; octave < 4; ++octave) {
+        value += amplitude * noise2(p);
+        p = p * 2.02 + vec2(17.3, 9.2);
+        amplitude *= 0.5;
+    }
+    return value;
+}
+
+vec3 sunnyDayBackground(vec3 direction) {
+    float len2 = dot(direction, direction);
+    vec3 unitDir = len2 > 1e-10 ? direction * inversesqrt(len2) : vec3(0.0, 1.0, 0.0);
+
+    vec3 sunDir = normalize(vec3(-0.35, 0.72, 0.60));
+    float sunAmount = max(dot(unitDir, sunDir), 0.0);
+
+    float skyHeight = smoothstep(-0.05, 0.92, unitDir.y);
+    vec3 horizonSky = vec3(0.62, 0.80, 1.00);
+    vec3 zenithSky = vec3(0.14, 0.40, 0.95);
+    vec3 sky = mix(horizonSky, zenithSky, skyHeight);
+
+    float cloudDomain = fbm(unitDir.xz * 3.5 + vec2(unitDir.y * 0.25, 0.0));
+    float clouds = smoothstep(0.63, 0.88, cloudDomain) * smoothstep(0.00, 0.45, unitDir.y);
+    sky = mix(sky, vec3(1.0), clouds * 0.65);
+
+    sky += vec3(1.00, 0.95, 0.78) * pow(sunAmount, 256.0) * 3.0;
+    sky += vec3(1.00, 0.90, 0.58) * pow(sunAmount, 24.0) * 0.28;
+
+    if (unitDir.y < 0.0) {
+        float grassNoise = fbm(unitDir.xz * 8.0 + vec2(3.1, 7.7));
+        vec3 grassLight = vec3(0.26, 0.46, 0.16);
+        vec3 grassDark = vec3(0.13, 0.28, 0.08);
+        vec3 grass = mix(grassDark, grassLight, grassNoise);
+
+        float horizonGlow = smoothstep(-0.10, 0.03, unitDir.y);
+        grass = mix(grass, vec3(0.80, 0.78, 0.34), horizonGlow * 0.35);
+
+        float treeNoise = fbm(unitDir.xz * 18.0 + vec2(11.0, 2.5));
+        float treeBand = smoothstep(0.12, -0.03, unitDir.y);
+        float trees = smoothstep(0.54, 0.82, treeNoise) * treeBand;
+        vec3 treeColor = vec3(0.05, 0.14, 0.05);
+
+        return mix(grass, treeColor, trees);
+    }
+
+    return sky;
 }
 
 #endif
