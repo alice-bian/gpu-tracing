@@ -56,6 +56,27 @@ struct SwapChainSupportDetails {
     std::vector<VkPresentModeKHR> presentModes;
 };
 
+struct CameraPushConstants {
+    std::array<float, 3> origin;
+    float pad0;
+    std::array<float, 3> u;
+    float pad1;
+    std::array<float, 3> v;
+    float pad2;
+    std::array<float, 3> w;
+    float pad3;
+    std::array<float, 3> sphereCenter;
+    float sphereFuzz;
+    float materialType;
+    float sphereIor;
+    float hollowShell;
+    float fov;
+    float aspect;
+    float width;
+    float height;
+    float frame;
+};
+
 std::string joinStrings(const std::vector<std::string>& values) {
     if (values.empty()) {
         return "";
@@ -485,6 +506,7 @@ private:
     VkAccelerationStructureKHR tlas = VK_NULL_HANDLE;
     VkDeviceAddress blasDeviceAddress = 0;
     uint32_t sphereTriangleCount = 0;
+    uint32_t sphereVertexCount = 0;
 
     VkDescriptorSetLayout rtDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool rtDescriptorPool = VK_NULL_HANDLE;
@@ -506,7 +528,36 @@ private:
         std::array<float, 3>{-0.4f, 0.2f, -1.2f}
     };
     std::array<float, 3> sphereCenter = spherePositions[1];
+    std::array<float, 7> fuzzPresets{
+        0.0f,
+        0.05f,
+        0.15f,
+        0.3f,
+        0.45f,
+        0.65f,
+        0.85f
+    };
+    struct GlassPreset {
+        float ior;
+        float hollow;
+    };
+    std::array<GlassPreset, 6> glassPresets{
+        GlassPreset{1.0f, 0.0f},
+        GlassPreset{1.0f, 1.0f},
+        GlassPreset{1.33f, 0.0f},
+        GlassPreset{1.5f, 0.0f},
+        GlassPreset{1.5f, 1.0f},
+        GlassPreset{2.4f, 0.0f}
+    };
+    bool useGlass = true;
+    float sphereFuzz = fuzzPresets[0];
+    float materialType = 0.0f;
+    float sphereIor = glassPresets[3].ior;
+    float hollowShell = glassPresets[3].hollow;
+    float cameraFov = 60.0f;
     uint32_t currentSphereIndex = 1;
+    uint32_t currentFuzzIndex = 0;
+    uint32_t currentIorIndex = 3;
     uint32_t frameCount = 0;
     std::array<float, 3> cameraPosition = {0.0f, 0.0f, 0.0f};
     float cameraYaw = -90.0f;
@@ -655,12 +706,29 @@ private:
     }
 
     void updateWindowTitle() {
-        glfwSetWindowTitle(window, "RT Path (R,WASD,Mouse)");
+        std::string title = useGlass ? "Glass" : "Metal";
+        title += " ";
+        if (useGlass) {
+            title += "I=" + std::to_string(sphereIor);
+            if (hollowShell > 0.5f) {
+                title += " hollow";
+            }
+            title += " (R,I,T)";
+        } else {
+            title += "F=" + std::to_string(sphereFuzz);
+            title += " (R,F,T)";
+        }
+        glfwSetWindowTitle(window, title.c_str());
     }
 
     void mainLoop() {
         bool resetKeyDown = false;
+        bool fuzzKeyDown = false;
+        bool iorKeyDown = false;
+        bool toggleKeyDown = false;
         double lastFrameTime = glfwGetTime();
+
+        materialType = useGlass ? 2.0f : 0.0f;
 
         updateWindowTitle();
 
@@ -686,10 +754,49 @@ private:
             if (rPressed && !resetKeyDown) {
                 currentSphereIndex = (currentSphereIndex + 1) % static_cast<uint32_t>(spherePositions.size());
                 sphereCenter = spherePositions[currentSphereIndex];
+                rebuildTopLevelASForCurrentSphereCenter();
                 resetAccumulation();
                 resetKeyDown = true;
             } else if (!rPressed) {
                 resetKeyDown = false;
+            }
+
+            bool iPressed = glfwGetKey(window, GLFW_KEY_I) == GLFW_PRESS;
+            if (iPressed && !iorKeyDown) {
+                if (useGlass) {
+                    currentIorIndex = (currentIorIndex + 1) % static_cast<uint32_t>(glassPresets.size());
+                    sphereIor = glassPresets[currentIorIndex].ior;
+                    hollowShell = glassPresets[currentIorIndex].hollow;
+                    resetAccumulation();
+                    updateWindowTitle();
+                }
+                iorKeyDown = true;
+            } else if (!iPressed) {
+                iorKeyDown = false;
+            }
+
+            bool fPressed = glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS;
+            if (fPressed && !fuzzKeyDown) {
+                if (!useGlass) {
+                    currentFuzzIndex = (currentFuzzIndex + 1) % static_cast<uint32_t>(fuzzPresets.size());
+                    sphereFuzz = fuzzPresets[currentFuzzIndex];
+                    resetAccumulation();
+                    updateWindowTitle();
+                }
+                fuzzKeyDown = true;
+            } else if (!fPressed) {
+                fuzzKeyDown = false;
+            }
+
+            bool tPressed = glfwGetKey(window, GLFW_KEY_T) == GLFW_PRESS;
+            if (tPressed && !toggleKeyDown) {
+                useGlass = !useGlass;
+                materialType = useGlass ? 2.0f : 0.0f;
+                resetAccumulation();
+                updateWindowTitle();
+                toggleKeyDown = true;
+            } else if (!tPressed) {
+                toggleKeyDown = false;
             }
 
             if (updateCamera(deltaTime)) {
@@ -1228,12 +1335,7 @@ private:
         imageInfo.imageView = rtOutputImageView;
         imageInfo.sampler = VK_NULL_HANDLE;
 
-        VkWriteDescriptorSetAccelerationStructureKHR asInfo{};
-        asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
-        asInfo.accelerationStructureCount = 1;
-        asInfo.pAccelerationStructures = &tlas;
-
-        VkWriteDescriptorSet writes[2]{};
+        VkWriteDescriptorSet writes[1]{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = rtDescriptorSet;
         writes[0].dstBinding = 0;
@@ -1241,14 +1343,25 @@ private:
         writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[0].pImageInfo = &imageInfo;
 
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = rtDescriptorSet;
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-        writes[1].pNext = &asInfo;
+        vkUpdateDescriptorSets(device, 1, writes, 0, nullptr);
+        updateRayTracingTlasDescriptor();
+    }
 
-        vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+    void updateRayTracingTlasDescriptor() {
+        VkWriteDescriptorSetAccelerationStructureKHR asInfo{};
+        asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+        asInfo.accelerationStructureCount = 1;
+        asInfo.pAccelerationStructures = &tlas;
+
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = rtDescriptorSet;
+        write.dstBinding = 1;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        write.pNext = &asInfo;
+
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
     }
 
     void createRayTracingPipeline() {
@@ -1297,6 +1410,13 @@ private:
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipelineLayoutInfo.setLayoutCount = 1;
         pipelineLayoutInfo.pSetLayouts = &rtDescriptorSetLayout;
+
+        VkPushConstantRange pushConstantRange{};
+        pushConstantRange.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+        pushConstantRange.offset = 0;
+        pushConstantRange.size = sizeof(CameraPushConstants);
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
         if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &rtPipelineLayout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create RT pipeline layout");
@@ -1755,12 +1875,29 @@ private:
     void createRayTracingAccelerationStructures() {
         std::vector<float> vertices;
         std::vector<uint32_t> indices;
-        generateSphereMesh(16, 16, 0.5f, vertices, indices);
+        generateSphereMesh(64, 64, 0.5f, vertices, indices);
+        sphereVertexCount = static_cast<uint32_t>(vertices.size() / 3);
         sphereTriangleCount = static_cast<uint32_t>(indices.size() / 3);
 
         uploadSphereMeshBuffers(vertices, indices);
-        buildBottomLevelAS(static_cast<uint32_t>(vertices.size() / 3), sphereTriangleCount);
+        buildBottomLevelAS(sphereVertexCount, sphereTriangleCount);
         buildTopLevelAS();
+    }
+
+    void rebuildTopLevelASForCurrentSphereCenter() {
+        if (fpDestroyAccelerationStructureKHR != nullptr && tlas != VK_NULL_HANDLE) {
+            fpDestroyAccelerationStructureKHR(device, tlas, nullptr);
+            tlas = VK_NULL_HANDLE;
+        }
+
+        destroyBuffer(tlasScratchBuffer);
+        destroyBuffer(tlasInstanceBuffer);
+        destroyBuffer(tlasBuffer);
+
+        buildTopLevelAS();
+        if (rtDescriptorSet != VK_NULL_HANDLE) {
+            updateRayTracingTlasDescriptor();
+        }
     }
 
     void destroyRayTracingAccelerationStructures() {
@@ -1783,6 +1920,7 @@ private:
         destroyBuffer(sphereIndexBuffer);
         destroyBuffer(sphereVertexBuffer);
         blasDeviceAddress = 0;
+        sphereVertexCount = 0;
     }
 
     uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
@@ -1945,6 +2083,38 @@ private:
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rtPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rtPipelineLayout, 0, 1, &rtDescriptorSet, 0, nullptr);
+
+        std::array<float, 3> forward = getCameraForward();
+        std::array<float, 3> worldUp = {0.0f, 1.0f, 0.0f};
+        std::array<float, 3> right = normalizeVec3(crossVec3(forward, worldUp));
+        std::array<float, 3> up = normalizeVec3(crossVec3(right, forward));
+
+        CameraPushConstants push{};
+        push.origin = cameraPosition;
+        push.pad0 = 0.0f;
+        push.u = right;
+        push.pad1 = 0.0f;
+        push.v = up;
+        push.pad2 = 0.0f;
+        push.w = {-forward[0], -forward[1], -forward[2]};
+        push.pad3 = 0.0f;
+        push.sphereCenter = sphereCenter;
+        push.sphereFuzz = sphereFuzz;
+        push.materialType = materialType;
+        push.sphereIor = sphereIor;
+        push.hollowShell = hollowShell;
+        push.fov = cameraFov;
+        push.aspect = static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height);
+        push.width = static_cast<float>(swapChainExtent.width);
+        push.height = static_cast<float>(swapChainExtent.height);
+        push.frame = static_cast<float>(frameCount);
+
+        vkCmdPushConstants(commandBuffer,
+                   rtPipelineLayout,
+                   VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+                   0,
+                   sizeof(CameraPushConstants),
+                   &push);
 
         fpCmdTraceRaysKHR(commandBuffer,
                           &rtRaygenRegion,
