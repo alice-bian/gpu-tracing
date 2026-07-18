@@ -699,8 +699,8 @@ private:
         createImageViews();
         createCommandPool();
         createRayTracingAccelerationStructures();
-        createRayTracingResources();
         createAccumulationResources();
+        createRayTracingResources();
         createCommandBuffers();
         createSyncObjects();
     }
@@ -1289,7 +1289,19 @@ private:
         tlasBinding.descriptorCount = 1;
         tlasBinding.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 
-        std::array<VkDescriptorSetLayoutBinding, 2> bindings = {outputBinding, tlasBinding};
+        VkDescriptorSetLayoutBinding prevAccumBinding{};
+        prevAccumBinding.binding = 2;
+        prevAccumBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        prevAccumBinding.descriptorCount = 1;
+        prevAccumBinding.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+
+        VkDescriptorSetLayoutBinding currAccumBinding{};
+        currAccumBinding.binding = 3;
+        currAccumBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        currAccumBinding.descriptorCount = 1;
+        currAccumBinding.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+
+        std::array<VkDescriptorSetLayoutBinding, 4> bindings = {outputBinding, tlasBinding, prevAccumBinding, currAccumBinding};
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1304,7 +1316,7 @@ private:
     void createRayTracingDescriptorPool() {
         std::array<VkDescriptorPoolSize, 2> poolSizes{};
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        poolSizes[0].descriptorCount = 1;
+        poolSizes[0].descriptorCount = 3;
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
         poolSizes[1].descriptorCount = 1;
 
@@ -1335,7 +1347,7 @@ private:
         imageInfo.imageView = rtOutputImageView;
         imageInfo.sampler = VK_NULL_HANDLE;
 
-        VkWriteDescriptorSet writes[1]{};
+        VkWriteDescriptorSet writes[4]{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = rtDescriptorSet;
         writes[0].dstBinding = 0;
@@ -1343,7 +1355,43 @@ private:
         writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[0].pImageInfo = &imageInfo;
 
-        vkUpdateDescriptorSets(device, 1, writes, 0, nullptr);
+        VkWriteDescriptorSetAccelerationStructureKHR asInfo{};
+        asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+        asInfo.accelerationStructureCount = 1;
+        asInfo.pAccelerationStructures = &tlas;
+
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = rtDescriptorSet;
+        writes[1].dstBinding = 1;
+        writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        writes[1].pNext = &asInfo;
+
+        VkDescriptorImageInfo prevAccumInfo{};
+        prevAccumInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        prevAccumInfo.imageView = accumulationImageViews[0];
+        prevAccumInfo.sampler = VK_NULL_HANDLE;
+
+        VkDescriptorImageInfo currAccumInfo{};
+        currAccumInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        currAccumInfo.imageView = accumulationImageViews[1];
+        currAccumInfo.sampler = VK_NULL_HANDLE;
+
+        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[2].dstSet = rtDescriptorSet;
+        writes[2].dstBinding = 2;
+        writes[2].descriptorCount = 1;
+        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[2].pImageInfo = &prevAccumInfo;
+
+        writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[3].dstSet = rtDescriptorSet;
+        writes[3].dstBinding = 3;
+        writes[3].descriptorCount = 1;
+        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[3].pImageInfo = &currAccumInfo;
+
+        vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
         updateRayTracingTlasDescriptor();
     }
 
@@ -1362,6 +1410,38 @@ private:
         write.pNext = &asInfo;
 
         vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    }
+
+    void updateRayTracingAccumulationDescriptors(uint32_t frameIndex) {
+        uint32_t writeIndex = frameIndex % 2u;
+        uint32_t readIndex = 1u - writeIndex;
+
+        VkDescriptorImageInfo prevAccumInfo{};
+        prevAccumInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        prevAccumInfo.imageView = accumulationImageViews[readIndex];
+        prevAccumInfo.sampler = VK_NULL_HANDLE;
+
+        VkDescriptorImageInfo currAccumInfo{};
+        currAccumInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        currAccumInfo.imageView = accumulationImageViews[writeIndex];
+        currAccumInfo.sampler = VK_NULL_HANDLE;
+
+        VkWriteDescriptorSet writes[2]{};
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = rtDescriptorSet;
+        writes[0].dstBinding = 2;
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[0].pImageInfo = &prevAccumInfo;
+
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = rtDescriptorSet;
+        writes[1].dstBinding = 3;
+        writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[1].pImageInfo = &currAccumInfo;
+
+        vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
     }
 
     void createRayTracingPipeline() {
@@ -2069,6 +2149,7 @@ private:
             }
         }
 
+        clearAccumulationImages();
         resetAccumulation();
     }
 
@@ -2083,6 +2164,7 @@ private:
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rtPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rtPipelineLayout, 0, 1, &rtDescriptorSet, 0, nullptr);
+        updateRayTracingAccumulationDescriptors(frameCount);
 
         std::array<float, 3> forward = getCameraForward();
         std::array<float, 3> worldUp = {0.0f, 1.0f, 0.0f};

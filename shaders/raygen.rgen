@@ -6,6 +6,8 @@
 
 layout(binding = 0, set = 0, rgba32f) uniform image2D outputImage;
 layout(binding = 1, set = 0) uniform accelerationStructureEXT topLevelAS;
+layout(binding = 2, set = 0, rgba32f) uniform readonly image2D prevAccum;
+layout(binding = 3, set = 0, rgba32f) uniform writeonly image2D currAccum;
 layout(location = 0) rayPayloadEXT PathPayload payload;
 
 const int MAX_PATH_BOUNCES = 4;
@@ -71,5 +73,9 @@ void main() {
         break;
     }
 
-    imageStore(outputImage, ivec2(launchId), vec4(finalColor, 1.0));
+    vec3 prev = imageLoad(prevAccum, ivec2(launchId)).rgb;
+    float t = 1.0 / (pc.frame + 1.0);
+    vec3 blended = mix(prev, finalColor, t);
+    imageStore(currAccum, ivec2(launchId), vec4(blended, 1.0));
+    imageStore(outputImage, ivec2(launchId), vec4(blended, 1.0));
 }
