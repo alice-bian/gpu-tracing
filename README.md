@@ -1,15 +1,16 @@
 # gpu-tracing
 
-A small C++/Vulkan renderer that now uses hardware ray tracing to trace a simple scene with a sphere mesh.
+A C++/Vulkan renderer that uses hardware ray tracing to render a simple sphere scene with material controls, a sunny-day background, and temporal accumulation.
 
 ## What it does
 
-- Renders with a Vulkan + GLFW setup and a shader-based path tracer
-- Uses a hardware ray tracing pipeline with raygen, miss, and closest-hit shaders
+- Renders with a Vulkan + GLFW setup and a hardware ray tracing pipeline
+- Uses raygen, miss, and closest-hit shaders to shade metal, glass, and Lambertian materials
+- Shows a procedural sunny-day background with blue sky, clouds, grass, and a tree line
 - Supports two material modes:
   - Metal with optional fuzz
   - Glass with configurable refractive index and optional hollow-shell behavior
-- Includes simple scene interaction and material switching controls
+- Includes scene interaction and material switching controls
 
 ## Requirements
 
@@ -56,4 +57,4 @@ build\Release\hello_vulkan.exe
 
 ## Notes
 
-The renderer uses push constants and a ray tracing pipeline with a BLAS/TLAS-backed sphere mesh. The main implementation lives in [src/main.cpp](src/main.cpp) and the shader logic is split across [shaders/raygen.rgen](shaders/raygen.rgen), [shaders/miss.rmiss](shaders/miss.rmiss), [shaders/closesthit.rchit](shaders/closesthit.rchit), and [shaders/common.glsl](shaders/common.glsl).
+The renderer uses push constants, a ray tracing pipeline, and temporal accumulation with a BLAS/TLAS-backed sphere mesh. The main implementation lives in [src/main.cpp](src/main.cpp) and the shader logic is split across [shaders/raygen.rgen](shaders/raygen.rgen), [shaders/miss.rmiss](shaders/miss.rmiss), [shaders/closesthit.rchit](shaders/closesthit.rchit), and [shaders/common.glsl](shaders/common.glsl).
