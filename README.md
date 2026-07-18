@@ -1,15 +1,15 @@
 # gpu-tracing
 
-A small C++/Vulkan renderer that uses a fullscreen triangle and a fragment shader to trace a simple scene with progressive accumulation.
+A small C++/Vulkan renderer that now uses hardware ray tracing to trace a simple scene with a sphere mesh.
 
 ## What it does
 
 - Renders with a Vulkan + GLFW setup and a shader-based path tracer
-- Accumulates frames over time for a progressively refined image
+- Uses a hardware ray tracing pipeline with raygen, miss, and closest-hit shaders
 - Supports two material modes:
   - Metal with optional fuzz
   - Glass with configurable refractive index and optional hollow-shell behavior
-- Includes simple scene interaction and reset controls for debugging accumulation and material changes
+- Includes simple scene interaction and material switching controls
 
 ## Requirements
 
@@ -56,4 +56,4 @@ build\Release\hello_vulkan.exe
 
 ## Notes
 
-The renderer uses push constants and image-based accumulation in the shader pipeline. The main implementation lives in src/main.cpp and the shader logic is in shaders/solid.frag.
+The renderer uses push constants and a ray tracing pipeline with a BLAS/TLAS-backed sphere mesh. The main implementation lives in [src/main.cpp](src/main.cpp) and the shader logic is split across [shaders/raygen.rgen](shaders/raygen.rgen), [shaders/miss.rmiss](shaders/miss.rmiss), [shaders/closesthit.rchit](shaders/closesthit.rchit), and [shaders/common.glsl](shaders/common.glsl).
