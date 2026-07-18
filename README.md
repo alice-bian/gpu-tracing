@@ -7,6 +7,7 @@ A C++/Vulkan renderer that uses hardware ray tracing to render a simple sphere s
 - Renders with a Vulkan + GLFW setup and a hardware ray tracing pipeline
 - Uses raygen, miss, and closest-hit shaders to shade metal, glass, and Lambertian materials
 - Shows a procedural sunny-day background with blue sky, clouds, grass, and a tree line
+- Uses ping-pong temporal accumulation images in the raygen stage for progressive frame blending
 - Supports two material modes:
   - Metal with optional fuzz
   - Glass with configurable refractive index and optional hollow-shell behavior
@@ -41,9 +42,9 @@ build\Release\hello_vulkan.exe
 ## Controls
 
 - R: move the sphere to the next test position and reset accumulation
-- F: cycle the metal fuzz amount
-- T: toggle between Metal and Glass modes
-- I: cycle through the glass presets, including hollow-shell variants
+- F: cycle the metal fuzz amount and reset accumulation
+- T: toggle between Metal and Glass modes and reset accumulation
+- I: cycle through the glass presets, including hollow-shell variants, and reset accumulation
 - W/A/S/D: move the camera (forward/left/back/right)
 - Left mouse click: capture/release mouse look
 - Mouse move (while captured): yaw/pitch look
@@ -57,4 +58,8 @@ build\Release\hello_vulkan.exe
 
 ## Notes
 
-The renderer uses push constants, a ray tracing pipeline, and temporal accumulation with a BLAS/TLAS-backed sphere mesh. The main implementation lives in [src/main.cpp](src/main.cpp) and the shader logic is split across [shaders/raygen.rgen](shaders/raygen.rgen), [shaders/miss.rmiss](shaders/miss.rmiss), [shaders/closesthit.rchit](shaders/closesthit.rchit), and [shaders/common.glsl](shaders/common.glsl).
+The renderer uses push constants, a ray tracing pipeline, and temporal accumulation with a BLAS/TLAS-backed sphere mesh. Accumulation is reset on camera movement and on material/scene changes (R/F/I/T), then progressively converges while the view and material state remain unchanged.
+
+The current app configuration uses a fixed-size window (GLFW resize disabled), so there is no active runtime swapchain resize/recreate path in this build.
+
+The main implementation lives in [src/main.cpp](src/main.cpp) and the shader logic is split across [shaders/raygen.rgen](shaders/raygen.rgen), [shaders/miss.rmiss](shaders/miss.rmiss), [shaders/closesthit.rchit](shaders/closesthit.rchit), and [shaders/common.glsl](shaders/common.glsl).
